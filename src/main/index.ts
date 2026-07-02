@@ -45,8 +45,7 @@ function createWindow(): BrowserWindow {
 // Open the TONE3000 authorize URL in a child window and resolve once the flow
 // redirects back to redirectUri. We intercept that navigation in the main
 // process and read the authorization code off the URL — there is no web server
-// listening on redirectUri, so it never actually loads. This is what replaces
-// the browser demo's "redirect lands on a Vite-served page" assumption.
+// listening on redirectUri, so it never actually loads.
 function runAuthorize(
   parent: BrowserWindow,
   authorizeUrl: string,
@@ -63,9 +62,7 @@ function runAuthorize(
       show: false,
       title: 'Sign in to TONE3000',
       autoHideMenuBar: true,
-      // Deliberately no preload and no node integration: we never run our own
-      // code inside tone3000's login page, so the host app cannot read the
-      // user's TONE3000 credentials. We only watch the top-level URL.
+      // Auth window shows a third-party page (tone3000); keep it isolated: no preload, no Node.
       webPreferences: { contextIsolation: true, nodeIntegration: false },
     })
 

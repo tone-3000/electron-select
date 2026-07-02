@@ -1,18 +1,9 @@
 /**
- * tone3000-client.ts — TONE3000 OAuth + API client, Electron edition.
+ * tone3000-client.ts — TONE3000 OAuth + API client.
  *
- * Adapted from the browser reference client. Two things differ from the web
- * build, and only two:
- *
- *   1. The OAuth redirect is caught by the Electron main process
- *      (window.t3k.authorize) instead of landing on a web-served page, because
- *      a packaged app has no web server for the redirect to hit.
- *
- *   2. Tokens are persisted via window.t3k.tokens (safeStorage on disk) instead
- *      of sessionStorage, so they survive quitting and relaunching the app.
- *
- * Everything else — PKCE, the token exchange, refresh, and the resource
- * methods — is the same as the browser client.
+ * The OAuth redirect is captured by the Electron main process via
+ * window.t3k.authorize; tokens are persisted through window.t3k.tokens
+ * (safeStorage on disk) so they survive an app restart.
  */
 
 import { T3K_API } from './config'
@@ -45,10 +36,9 @@ async function sha256Base64url(input: string): Promise<string> {
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
 }
 
-// PKCE state for the in-flight flow. The renderer window stays alive for the
-// whole flow (the auth UI is a separate main-process window), so a module
-// variable is enough — no storage needed, unlike the browser client which had
-// to stash the verifier in sessionStorage across a full-page redirect.
+// PKCE state for the in-flight flow. The renderer stays alive for the whole
+// flow (the auth UI is a separate window), so a module variable is enough — the
+// verifier doesn't need persisting.
 let pending: { codeVerifier: string; state: string } | null = null
 
 function buildAuthorizeUrl(
