@@ -1,0 +1,15 @@
+appId: com.tone3000.electron-select
+productName: TONE3000 Select
+directories:
+  buildResources: build
+files:
+  - out/**
+  - package.json
+mac:
+  target: dmg
+  category: public.app-category.music
+win:
+  target: nsis
+linux:
+  target: AppImage
+  category: Audio
