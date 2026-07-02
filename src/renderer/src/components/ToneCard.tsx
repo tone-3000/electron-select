@@ -8,13 +8,13 @@ interface Props {
   compact?: boolean;
 }
 
-const PLATFORM_LABELS: Record<string, string> = {
+const FORMAT_LABELS: Record<string, string> = {
   'nam': 'NAM', 'ir': 'IR', 'aida-x': 'AIDA-X',
   'aa-snapshot': 'Snapshot', 'proteus': 'Proteus',
 };
 
 const GEAR_LABELS: Record<string, string> = {
-  'amp': 'Amp', 'full-rig': 'Full Rig', 'pedal': 'Pedal',
+  'amp': 'Amp', 'amp-cab': 'Amp + Cab', 'full-rig': 'Full Rig', 'pedal': 'Pedal',
   'outboard': 'Outboard', 'ir': 'IR',
 };
 
@@ -33,7 +33,7 @@ export function ToneCard({ tone, onClick, compact = false }: Props) {
           <p className="tone-card-desc">{tone.description}</p>
         )}
         <div className="tone-card-badges">
-          <span className="badge badge--platform">{PLATFORM_LABELS[tone.platform] ?? tone.platform}</span>
+          <span className="badge badge--platform">{FORMAT_LABELS[tone.format] ?? tone.format}</span>
           <span className="badge badge--gear">{GEAR_LABELS[tone.gear] ?? tone.gear}</span>
           {!tone.is_public && <span className="badge badge--private">Private</span>}
         </div>

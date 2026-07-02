@@ -4,13 +4,14 @@ export type Demo = 'select' | 'load-tone' | 'load-model' | 'full-api' | 'lan-flo
 
 export enum Gear {
   Amp = 'amp',
+  AmpCab = 'amp-cab',
   FullRig = 'full-rig',
   Pedal = 'pedal',
   Outboard = 'outboard',
   Ir = 'ir',
 }
 
-export enum Platform {
+export enum Format {
   Nam = 'nam',
   Ir = 'ir',
   AidaX = 'aida-x',
@@ -101,7 +102,7 @@ export interface Tone {
   images: string[] | null;
   is_public: boolean | null;
   links: string[] | null;
-  platform: Platform;
+  format: Format;
   license: License;
   sizes: Size[];
   makes: Make[];
