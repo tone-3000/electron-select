@@ -1,17 +1,24 @@
 import { useEffect, useState } from 'react'
 import { t3kClient } from './client'
 import { SelectApp } from './apps/SelectApp'
+import type { SelectResult } from '../../shared/types'
 
 export default function App() {
-  const [ready, setReady] = useState(false)
+  const [initial, setInitial] = useState<SelectResult | null>(null)
 
-  // Hydrate persisted tokens before first render so the app comes up already
-  // connected when the user has authed in a previous session.
+  // Before first render, hydrate persisted tokens (so the app comes up already
+  // connected) and read any pending select-flow result the main process left
+  // after navigating the window back from TONE3000. Both reads are idempotent,
+  // so StrictMode's double-invoked effect in dev is harmless.
   useEffect(() => {
-    t3kClient.hydrate().finally(() => setReady(true))
+    let alive = true
+    void Promise.all([t3kClient.hydrate(), window.t3k.getSelectResult()]).then(([, result]) => {
+      if (alive) setInitial(result)
+    })
+    return () => { alive = false }
   }, [])
 
-  if (!ready) {
+  if (!initial) {
     return (
       <div className="splash">
         <div className="splash-spinner" />
@@ -20,5 +27,5 @@ export default function App() {
     )
   }
 
-  return <SelectApp />
+  return <SelectApp initial={initial} />
 }
