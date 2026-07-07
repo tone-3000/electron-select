@@ -1,12 +1,7 @@
 import { app, safeStorage } from 'electron'
 import { join } from 'path'
 import { existsSync, readFileSync, writeFileSync, rmSync } from 'fs'
-
-export interface T3KTokens {
-  access_token: string
-  refresh_token: string
-  expires_at: number
-}
+import type { T3KTokens } from '../shared/types'
 
 // Encrypted store is the default. The plaintext fallback only kicks in when the
 // OS keychain is unavailable (e.g. a Linux box with no Secret Service / keyring).
