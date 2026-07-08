@@ -1,8 +1,8 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, WebContentsView, ipcMain } from 'electron'
 import { join } from 'path'
 import { randomBytes, createHash } from 'node:crypto'
 import { tokenStore } from './tokenStore'
-import type { T3KTokens, BeginSelectConfig, SelectResult } from '../shared/types'
+import type { T3KTokens, BeginSelectConfig, SelectResult, ViewBounds } from '../shared/types'
 
 function loadApp(win: BrowserWindow): void {
   if (process.env['ELECTRON_RENDERER_URL']) {
@@ -10,6 +10,19 @@ function loadApp(win: BrowserWindow): void {
   } else {
     void win.loadFile(join(__dirname, '../renderer/index.html'))
   }
+}
+
+// Route http(s) target=_blank / external links to the system browser instead of
+// spawning an in-app window. Used for both the app window and the embedded
+// TONE3000 view — only hand real web URLs to the OS, never an arbitrary scheme.
+function openExternalHandler({ url }: { url: string }): { action: 'deny' } {
+  try {
+    const { protocol } = new URL(url)
+    if (protocol === 'http:' || protocol === 'https:') void shell.openExternal(url)
+  } catch {
+    /* malformed URL — ignore */
+  }
+  return { action: 'deny' }
 }
 
 function createWindow(): BrowserWindow {
@@ -27,33 +40,24 @@ function createWindow(): BrowserWindow {
   })
 
   win.on('ready-to-show', () => win.show())
-
-  // Any target=_blank / external link opens in the system browser, not in-app.
-  // The window loads TONE3000 (a third-party origin) during the flow, so only
-  // hand http(s) URLs to the OS — never an arbitrary scheme the page requests.
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    try {
-      const { protocol } = new URL(url)
-      if (protocol === 'http:' || protocol === 'https:') void shell.openExternal(url)
-    } catch {
-      /* malformed URL — ignore */
-    }
-    return { action: 'deny' }
-  })
+  win.webContents.setWindowOpenHandler(openExternalHandler)
 
   loadApp(win)
 
   return win
 }
 
-// ─── OAuth (main-owned) ─────────────────────────────────────────────────────
+// ─── Select flow (embedded WebContentsView, main-owned) ─────────────────────
 //
-// The select flow navigates the main window itself to TONE3000 and, on the
-// redirect back, reloads the local app. That teardown/rebuild destroys the
-// renderer, so PKCE state and the callback must live here in the main process —
-// the one component that survives the reload. Initiation + code→token exchange
-// therefore run here; the renderer keeps only the live API session (T3KClient)
-// and its refresh, which needs just the refresh_token it already holds.
+// The flow runs in a WebContentsView laid into the window beside the app's
+// sidebar — the React app stays mounted the whole time. TONE3000 gets its own
+// web contents with NO preload, so window.t3k can never reach that origin.
+//
+// OAuth still lives in main because the redirect is captured on the *view's*
+// webContents (via will-redirect / will-navigate), which the renderer can't
+// listen to. Main generates the PKCE challenge, loads the authorize URL into the
+// view, exchanges the code for tokens on the redirect back, then destroys the
+// view and pushes the result to the renderer.
 
 function base64url(buf: Buffer): string {
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
@@ -116,37 +120,53 @@ async function exchangeCode(
   }
 }
 
-// In-flight PKCE state, held only for the span of the flow (a single window
-// navigation). Cleared as soon as the flow settles in finishFlow.
-let pending: {
-  codeVerifier: string
-  state: string
-  cfg: BeginSelectConfig
-} | null = null
-// The last completed flow's status, read by the renderer once it reloads. Reset
-// when the next flow starts (and naturally on process restart), so the read is
-// idempotent — the renderer can boot under StrictMode's double effect safely.
-let lastStatus: SelectResult['status'] = 'none'
-// The tone the app should display: the most recently selected one. Survives the
-// in-session reloads (a canceled re-browse still restores it) but not a process
-// restart, matching token persistence — tokens outlive restarts, tones don't.
+// The live embedded view for the in-flight flow, and its PKCE state. Both are
+// held only for the span of one flow and cleared in finishFlow.
+let activeView: WebContentsView | null = null
+let pending: { codeVerifier: string; state: string; cfg: BeginSelectConfig } | null = null
+// The tone the app should display: the most recently selected one. Held in
+// memory (like the view), so it survives a canceled re-browse but not a process
+// restart — matching that tokens outlive restarts while the loaded tone doesn't.
 let currentToneId: string | undefined
-// Removes the navigation listeners installed for the in-flight flow.
+// Removes the navigation listeners installed on the active view's webContents.
 let cleanupInterceptor: (() => void) | null = null
 
-// Start the select flow: generate PKCE, install a one-shot navigation
-// interceptor on the window, and send the window to the authorize URL. The
-// interceptor watches for the redirect back to redirectUri (a sentinel that
-// nothing serves — it never actually loads) and hands off to finishFlow.
-function beginSelect(win: BrowserWindow, cfg: BeginSelectConfig): void {
-  cleanupInterceptor?.() // detach listeners from any prior flow that never settled
-  lastStatus = 'none' // drop the previous flow's status before starting a new one
+// Detach the embedded view from the window and dispose its web contents. The
+// close is deferred to a microtask because this is often reached from inside one
+// of the view's own navigation events (will-redirect), where tearing the
+// contents down synchronously is unsafe.
+function destroyActiveView(win: BrowserWindow): void {
+  cleanupInterceptor?.()
+  cleanupInterceptor = null
+  const view = activeView
+  activeView = null
+  if (!view) return
+  if (!win.isDestroyed()) win.contentView.removeChildView(view)
+  queueMicrotask(() => view.webContents.close())
+}
+
+// Start the select flow: generate PKCE, create the embedded view at the bounds
+// the renderer measured, install a one-shot navigation interceptor on the view's
+// webContents, and load the authorize URL into it. The interceptor watches for
+// the redirect back to redirectUri (a sentinel that nothing serves — it never
+// actually loads) and hands off to finishFlow.
+function beginSelect(win: BrowserWindow, cfg: BeginSelectConfig, bounds: ViewBounds): void {
+  destroyActiveView(win) // tear down any prior flow that never settled
   const codeVerifier = base64url(randomBytes(32))
   const codeChallenge = base64url(createHash('sha256').update(codeVerifier).digest())
   const state = base64url(randomBytes(16))
   pending = { codeVerifier, state, cfg }
 
-  const wc = win.webContents
+  const view = new WebContentsView({
+    webPreferences: { contextIsolation: true, nodeIntegration: false },
+  })
+  view.setBackgroundColor('#ffffff') // avoid a transparent flash before first paint
+  activeView = view
+  win.contentView.addChildView(view)
+  view.setBounds(bounds)
+
+  const wc = view.webContents
+  wc.setWindowOpenHandler(openExternalHandler)
 
   const handleNavigation = (event: Electron.Event, url: string): void => {
     if (!url.startsWith(cfg.redirectUri)) return
@@ -162,16 +182,15 @@ function beginSelect(win: BrowserWindow, cfg: BeginSelectConfig): void {
   }
 
   // If the authorize endpoint itself errors (e.g. unknown client_id → HTTP 4xx
-  // with no redirect), finish instead of stranding the user on an error page
-  // that has replaced the whole app.
+  // with no redirect), finish instead of leaving the user on an error page
+  // inside the panel.
   const handleDidNavigate = (_e: Electron.Event, url: string, httpResponseCode: number): void => {
     if (url.startsWith(cfg.redirectUri)) return
     if (httpResponseCode >= 400) void finishFlow(win, { error: `authorize_failed_${httpResponseCode}` })
   }
 
   // A main-frame load failure (offline, DNS/TLS error) never fires did-navigate,
-  // so surface it here rather than leave the user on a Chromium error page with
-  // the whole app gone. Ignore sub-frames and ERR_ABORTED (-3), which fires for
+  // so surface it here. Ignore sub-frames and ERR_ABORTED (-3), which fires for
   // the redirect_uri navigation we cancel above.
   const handleFailLoad = (
     _e: Electron.Event,
@@ -184,19 +203,19 @@ function beginSelect(win: BrowserWindow, cfg: BeginSelectConfig): void {
     void finishFlow(win, { error: 'load_failed' })
   }
 
-  // Escape aborts the flow — a guaranteed way back now that the app UI is gone.
+  // Escape aborts the flow — a keyboard escape-hatch matching the renderer's
+  // Cancel button.
   const handleInput = (_e: Electron.Event, input: Electron.Input): void => {
     if (input.type === 'keyDown' && input.key === 'Escape') void finishFlow(win, { canceled: true })
   }
 
-  const detach = (): void => {
+  cleanupInterceptor = (): void => {
     wc.removeListener('will-redirect', handleNavigation)
     wc.removeListener('will-navigate', handleNavigation)
     wc.removeListener('did-navigate', handleDidNavigate)
     wc.removeListener('did-fail-load', handleFailLoad)
     wc.removeListener('before-input-event', handleInput)
   }
-  cleanupInterceptor = detach
 
   wc.on('will-redirect', handleNavigation)
   wc.on('will-navigate', handleNavigation)
@@ -215,59 +234,66 @@ interface CallbackParams {
   canceled?: boolean
 }
 
-// Resolve a flow: record the result, tear down the interceptor, and send the
-// window back to the local app. Guarded so multiple navigation events (e.g. a
-// redirect plus a stray did-navigate) settle exactly once.
+// Resolve a flow: exchange the code if there is one, tear down the embedded
+// view, and push the outcome to the renderer. Guarded on `pending` so multiple
+// navigation events (a redirect plus a stray did-navigate) settle exactly once.
 async function finishFlow(win: BrowserWindow, params: CallbackParams): Promise<void> {
   if (!pending) return
   const { codeVerifier, state, cfg } = pending
   pending = null
-  cleanupInterceptor?.()
-  cleanupInterceptor = null
 
+  let status: SelectResult['status']
+  let error: string | undefined
   if (params.canceled && !params.code) {
-    lastStatus = 'canceled'
-  } else if (params.error) {
-    lastStatus = 'error'
-  } else if (params.state !== state) {
-    lastStatus = 'error'
-  } else if (!params.code) {
-    lastStatus = 'error'
+    status = 'canceled'
+  } else if (params.error || params.state !== state || !params.code) {
+    status = 'error'
+    error = params.error
   } else {
     try {
       const tokens = await exchangeCode(cfg, params.code, codeVerifier)
       tokenStore.set(tokens)
-      lastStatus = 'selected'
+      status = 'selected'
       // Only advance the displayed tone on a real selection; a canceled/errored
       // re-browse leaves currentToneId pointing at whatever was already loaded.
       if (params.tone_id) currentToneId = params.tone_id
     } catch {
-      lastStatus = 'error'
+      status = 'error'
+      error = 'token_exchange_failed'
     }
   }
 
-  if (!win.isDestroyed()) loadApp(win)
+  destroyActiveView(win)
+  if (!win.isDestroyed()) {
+    win.webContents.send('oauth:selectComplete', { status, toneId: currentToneId, error })
+  }
 }
 
 app.whenReady().then(() => {
-  ipcMain.handle('oauth:beginSelect', (event, cfg: BeginSelectConfig) => {
+  ipcMain.handle('oauth:beginSelect', (event, cfg: BeginSelectConfig, bounds: ViewBounds) => {
     const win = BrowserWindow.fromWebContents(event.sender)
-    if (win) beginSelect(win, cfg)
+    if (win) beginSelect(win, cfg, bounds)
   })
 
-  ipcMain.handle(
-    'oauth:getSelectResult',
-    (): SelectResult => ({ status: lastStatus, toneId: currentToneId })
-  )
+  // Fired continuously from the renderer as it (and the window) resize, keeping
+  // the embedded view aligned to its DOM slot. Uses send (not invoke) — it's
+  // fire-and-forget and can arrive many times per drag.
+  ipcMain.on('oauth:setSelectBounds', (_event, bounds: ViewBounds) => {
+    activeView?.setBounds(bounds)
+  })
+
+  // User dismissed the panel (Cancel button / Disconnect mid-flow).
+  ipcMain.handle('oauth:endSelect', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (win) void finishFlow(win, { canceled: true })
+  })
 
   ipcMain.handle('tokens:get', () => tokenStore.get())
   ipcMain.handle('tokens:set', (_event, tokens: T3KTokens) => tokenStore.set(tokens))
   ipcMain.handle('tokens:clear', () => {
     tokenStore.clear()
-    // Forget the displayed tone too, so a later reload doesn't try to reload it
-    // for a now-disconnected session.
+    // Forget the displayed tone too, so it isn't reloaded for a now-disconnected session.
     currentToneId = undefined
-    lastStatus = 'none'
   })
 
   createWindow()

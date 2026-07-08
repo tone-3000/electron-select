@@ -32,9 +32,23 @@ export interface BeginSelectConfig {
 }
 
 /**
- * Outcome of the most recent select flow, read by the renderer once it reloads.
- * `toneId` is the tone to display — the most recently selected one — carried on
- * every status so a canceled/errored re-browse still restores the loaded tone.
+ * Screen region (device-independent pixels, relative to the window's content
+ * area) where the embedded TONE3000 WebContentsView should sit. The renderer
+ * measures the DOM slot beside the sidebar and hands these bounds to main, which
+ * positions the view and keeps it in sync as the window resizes.
+ */
+export interface ViewBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/**
+ * Outcome of a select flow, pushed to the renderer when main tears the embedded
+ * view down (see `onSelectComplete`). `toneId` is the tone to display — the most
+ * recently selected one — carried on every status so a canceled/errored
+ * re-browse still restores the previously loaded tone.
  */
 export interface SelectResult {
   status: 'selected' | 'canceled' | 'error' | 'none'
