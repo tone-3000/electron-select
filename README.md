@@ -1,10 +1,10 @@
 # TONE3000 × Electron — Select Flow Example
 
 A minimal [Electron](https://www.electronjs.org/) reference integration for the
-**TONE3000 select flow**: the user clicks "Browse Tones on TONE3000", picks a tone
-on TONE3000 (in the same app window), and the app receives the tone plus its
-downloadable model files. It is the desktop counterpart to the web select demo in the
-[TONE3000 API examples](https://www.tone3000.com/api).
+**TONE3000 select flow**: the user clicks "Browse Tones", picks a tone on TONE3000
+(embedded in a panel beside the app's own sidebar), and the app receives the tone plus
+its downloadable model files. It is the desktop counterpart to the web select demo in
+the [TONE3000 API examples](https://www.tone3000.com/api).
 
 Built with **electron-vite** (Electron + Vite + React + TypeScript).
 
@@ -12,10 +12,13 @@ Built with **electron-vite** (Electron + Vite + React + TypeScript).
 
 ## How it works
 
-The whole flow lives in **one window**. Clicking "Browse Tones on TONE3000" navigates
-the app window itself to TONE3000 — like a browser tab — and when TONE3000 redirects
-back, the window returns to the app with the chosen tone. There's no popup and no second
-window to manage. Two things are handled specially to fit a desktop app.
+The app's UI — sidebar, header, chrome — stays mounted the whole time. Clicking
+"Browse Tones" opens TONE3000 in an embedded
+[`WebContentsView`](https://www.electronjs.org/docs/latest/api/web-contents-view)
+laid into the content region beside the sidebar. When TONE3000 redirects back, the main
+process removes the view and hands the app the chosen tone — no popup, no second window,
+and the app never navigates away from itself. Two things are handled specially to fit a
+desktop app.
 
 ### Token persistence (safeStorage)
 
@@ -27,30 +30,42 @@ with the OS keychain (macOS Keychain / Windows DPAPI / Linux libsecret) and writ
 
 - `src/main/tokenStore.ts` — encrypt/decrypt ↔ `userData/tokens.enc`
 - `src/preload/index.ts` — exposes `window.t3k.tokens.{get,set,clear}`
-- `src/renderer/src/tone3000-client.ts` — `T3KClient` hydrates from the store once at
-  boot and writes through on every change; `getTokens()` stays synchronous.
+- `src/renderer/src/tone3000-client.ts` — `T3KClient` hydrates from the store at boot and
+  again when a select flow completes, and writes through on every change; `getTokens()`
+  stays synchronous.
 - `src/renderer/src/App.tsx` — awaits hydration before first render, so the app comes
   up already connected.
 
-### Same-window OAuth (main process owns it)
+### Embedded OAuth (main process owns it)
 
-The renderer asks the main process to start the flow (`window.t3k.beginSelect`). The main
-process generates the PKCE challenge, navigates the app window to the authorize URL, and
-watches for the redirect back to `redirect_uri`. On that redirect it exchanges the `code`
-for tokens, persists them (above), records which tone was chosen, and reloads the local
-app. The rebuilt renderer reads the outcome with `window.t3k.getSelectResult()` and
-loads the tone.
+The renderer measures the DOM slot beside its sidebar and asks the main process to start
+the flow (`window.t3k.beginSelect(config, bounds)`). Main generates the PKCE challenge,
+creates a `WebContentsView` at those bounds, loads the authorize URL into it, and watches
+that view's web contents for the redirect back to `redirect_uri`. On the redirect it
+exchanges the `code` for tokens, persists them (above), records which tone was chosen,
+then destroys the view and pushes the outcome to the renderer. The renderer re-hydrates
+its token client from the store (it never reloaded, so its in-memory tokens are stale)
+and loads the tone.
 
-- `src/main/index.ts` — `beginSelect()` starts the flow and installs a navigation
-  interceptor (`will-redirect` / `will-navigate`, plus 4xx and load-failure safety nets and
-  an Escape escape-hatch); `finishFlow()` exchanges the code, persists tokens, and reloads
-  the app.
+- `src/main/index.ts` — `beginSelect()` creates the embedded view and installs a
+  navigation interceptor on **its** web contents (`will-redirect` / `will-navigate`, plus
+  4xx and load-failure safety nets and an Escape escape-hatch); `finishFlow()` exchanges
+  the code, persists tokens, tears the view down, and sends `oauth:selectComplete`.
+- The renderer keeps the view aligned to its slot via `window.t3k.setSelectBounds(bounds)`
+  (fired from a `ResizeObserver` + window `resize`), and hears the result through
+  `window.t3k.onSelectComplete(...)`. See `src/renderer/src/apps/SelectApp.tsx`.
 
-**Why OAuth lives in main:** navigating the window away tears down and rebuilds the
-renderer, so the in-flight PKCE verifier and the callback can't live there. The main
-process survives the reload, so it owns *initiation + code→token exchange*. The renderer
-keeps only the live session — `T3KClient` and its token refresh (`tone3000-client.ts`),
-which need just the `refresh_token` already in hand.
+**Why OAuth lives in main:** the redirect is captured on the *view's* web contents, which
+the renderer can't attach navigation listeners to. So main owns the view and therefore
+*initiation + code→token exchange*. The renderer keeps only the live session — `T3KClient`
+and its token refresh (`tone3000-client.ts`), which need just the `refresh_token` already
+in hand. (The renderer no longer tears down mid-flow, so this could move to the renderer;
+keeping it in main is what lets TONE3000 render in a view with no bridge — see below.)
+
+**Bounds are in device-independent pixels.** The renderer's `getBoundingClientRect` and
+main's `view.setBounds` share the window's content-area coordinate space, so they line up
+at the default zoom. A production app that supports zoom should scale by
+`webContents.getZoomFactor()`.
 
 The `redirect_uri` is a sentinel — nothing needs to serve it, because the navigation is
 intercepted before it loads. It must still be registered in your API key's allowed
@@ -62,11 +77,12 @@ from the app.
 
 ### Keeping the bridge off the TONE3000 origin
 
-Because the app window navigates to `www.tone3000.com` during the flow, and the preload
-runs on every page loaded in that window, the preload only exposes `window.t3k` when the
-loaded page is our own app (`file://` when packaged, or the dev renderer URL). On the
-TONE3000 origin `window.t3k` is `undefined`, so a third-party page can never reach the
-token store. See the origin check in `src/preload/index.ts`.
+The embedded view that loads `www.tone3000.com` is created with **no preload**, so
+`window.t3k` simply doesn't exist there — a third-party page can never reach the token
+store. As defense-in-depth, the app's own preload also gates `window.t3k` to our origin
+(`file://` when packaged, or the dev renderer URL), so the guarantee holds even if that
+preload were ever attached to a window that navigates elsewhere. See the origin check in
+`src/preload/index.ts`.
 
 ---
 
@@ -96,8 +112,9 @@ npm run dev
 ```
 
 An Electron window opens on the "No Tone Loaded" state. Click **Browse Tones on
-TONE3000** — the same window navigates to TONE3000. Sign in and pick a tone; the window
-returns to the app with the tone and its models.
+TONE3000** — TONE3000 fills the area beside the sidebar (the app UI stays visible). Sign
+in and pick a tone; the panel closes and the app shows the tone and its models. Press
+**Escape** to cancel without selecting.
 
 **Verify persistence:** fully quit the app (Cmd+Q) and relaunch. It comes up already
 showing **"Signed in as @you"** with no login — the token is read back from `safeStorage`
@@ -122,16 +139,16 @@ same way, with no local server.
 ```
 src/
   main/
-    index.ts        # window lifecycle; select flow (PKCE + redirect capture + exchange); token IPC
+    index.ts        # window lifecycle; embedded select view (PKCE + redirect capture + exchange); token IPC
     tokenStore.ts   # safeStorage-encrypted token file in userData
   preload/
-    index.ts        # contextBridge → window.t3k (origin-gated); beginSelect / getSelectResult / tokens
+    index.ts        # contextBridge → window.t3k (origin-gated); beginSelect / setSelectBounds / endSelect / onSelectComplete / tokens
   renderer/
     index.html
     src/
       main.tsx
-      App.tsx             # hydrate tokens + read select result, then render
-      apps/SelectApp.tsx  # the select-flow UI
+      App.tsx             # hydrate tokens, then render
+      apps/SelectApp.tsx  # select-flow UI: sidebar + embedded browse panel (measures bounds, syncs the view)
       tone3000-client.ts  # live API client + token refresh (session only; OAuth lives in main)
       client.ts           # shared T3KClient instance
       config.ts           # env config

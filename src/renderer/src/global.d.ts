@@ -1,11 +1,13 @@
-import type { T3KTokens, BeginSelectConfig, SelectResult } from '../../shared/types'
+import type { T3KTokens, BeginSelectConfig, SelectResult, ViewBounds } from '../../shared/types'
 
 declare global {
   interface Window {
     // Bridge exposed by the preload script (see src/preload/index.ts).
     t3k: {
-      beginSelect(config: BeginSelectConfig): Promise<void>
-      getSelectResult(): Promise<SelectResult>
+      beginSelect(config: BeginSelectConfig, bounds: ViewBounds): Promise<void>
+      setSelectBounds(bounds: ViewBounds): void
+      endSelect(): Promise<void>
+      onSelectComplete(callback: (result: SelectResult) => void): () => void
       tokens: {
         get(): Promise<T3KTokens | null>
         set(tokens: T3KTokens): Promise<void>
