@@ -1,17 +1,12 @@
 /**
- * tone3000-client.ts — TONE3000 live API session.
- *
- * The OAuth select flow (PKCE + code→token exchange) runs in the Electron main
- * process — see src/main/index.ts — because it spans a window navigation that
- * tears down the renderer. This module owns only what lives with the renderer:
- * the authenticated API client and its token refresh, which needs just the
- * refresh_token the client already holds. Tokens are persisted through
- * window.t3k.tokens (safeStorage on disk) so they survive an app restart.
+ * Authenticated TONE3000 API client + token refresh.
+ * OAuth (PKCE + code exchange) lives in the main process — see src/main/index.ts.
+ * Tokens persist via window.t3k.tokens (safeStorage).
  */
 
 import { T3K_API } from './config'
 import type {
-  User, Tone, Model, PaginatedResponse, ListModelsParams,
+  User, Tone, Model, PaginatedResponse, ListModelsParams, ListTonesParams,
 } from './types'
 import type { T3KTokens } from '../../shared/types'
 
@@ -30,7 +25,7 @@ export async function refreshTokens(
     }),
   })
 
-  if (!res.ok) throw new Error('Token refresh failed')
+  if (!res.ok) throw new ApiError('Token refresh failed', res.status)
 
   const data = await res.json()
   return {
@@ -40,26 +35,33 @@ export async function refreshTokens(
   }
 }
 
-// ─── Authenticated API client ─────────────────────────────────────────────────
+/** API failure that preserves the HTTP status for callers. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number
+  ) {
+    super(`${message}: ${status}`)
+  }
 
-/**
- * T3KClient — authenticated API client with automatic token refresh.
- *
- * Tokens live in memory for synchronous access and are hydrated from / written
- * through to the persistent store (window.t3k.tokens → safeStorage on disk).
- * Call `await hydrate()` once at startup before using the client; after that the
- * app is already connected across restarts with no re-auth.
- */
+  /** True for 403/429 (transient throttle / WAF deny). */
+  get isRateLimit(): boolean {
+    return this.status === 403 || this.status === 429
+  }
+}
+
+/** Authenticated client with automatic token refresh. Call hydrate() once at startup. */
 export class T3KClient {
   private tokens: T3KTokens | null = null
   private refreshPromise: Promise<T3KTokens> | null = null
+  private userPromise: Promise<User> | null = null
 
   constructor(
     private readonly publishableKey: string,
     private readonly onAuthRequired: () => void
   ) {}
 
-  /** Load persisted tokens into memory. Call once at app startup. */
+  /** Load persisted tokens into memory. */
   async hydrate(): Promise<void> {
     this.tokens = await window.t3k.tokens.get()
   }
@@ -75,6 +77,7 @@ export class T3KClient {
 
   clearTokens(): void {
     this.tokens = null
+    this.userPromise = null
     void window.t3k.tokens.clear()
   }
 
@@ -89,15 +92,18 @@ export class T3KClient {
       throw new Error('Not authenticated')
     }
 
-    // Proactively refresh 60s before expiry to avoid mid-request failures.
+    // Refresh 60s before expiry.
     if (Date.now() > tokens.expires_at - 60_000) {
       if (!this.refreshPromise) {
         this.refreshPromise = refreshTokens(tokens.refresh_token, this.publishableKey)
           .then((t) => { this.setTokens(t); this.refreshPromise = null; return t })
           .catch((err) => {
-            this.clearTokens()
             this.refreshPromise = null
-            this.onAuthRequired()
+            // 400/401 = invalid_grant — clear session. Other errors are transient.
+            if (err instanceof ApiError && (err.status === 400 || err.status === 401)) {
+              this.clearTokens()
+              this.onAuthRequired()
+            }
             throw err
           })
       }
@@ -107,7 +113,6 @@ export class T3KClient {
     return tokens.access_token
   }
 
-  /** Make an authenticated request to the TONE3000 API. */
   async fetch(path: string, init?: RequestInit): Promise<Response> {
     const token = await this.getAccessToken()
     const res = await fetch(`${T3K_API}${path}`, {
@@ -115,9 +120,9 @@ export class T3KClient {
       headers: { ...init?.headers, Authorization: `Bearer ${token}` },
     })
 
-    // Retry once on 401 — handles expiry races between the refresh check and the request.
+    // Retry once on 401 in case the token expired mid-request.
     if (res.status === 401 && this.tokens) {
-      this.setTokens({ ...this.tokens, expires_at: 0 }) // force a refresh
+      this.setTokens({ ...this.tokens, expires_at: 0 })
       const retryToken = await this.getAccessToken()
       return fetch(`${T3K_API}${path}`, {
         ...init,
@@ -129,14 +134,61 @@ export class T3KClient {
   }
 
   async getUser(): Promise<User> {
-    const res = await this.fetch('/api/v1/user')
-    if (!res.ok) throw new Error(`getUser failed: ${res.status}`)
+    if (!this.userPromise) {
+      this.userPromise = this.fetch('/api/v1/user')
+        .then((res) => {
+          if (!res.ok) throw new ApiError('getUser failed', res.status)
+          return res.json() as Promise<User>
+        })
+        .catch((err) => {
+          this.userPromise = null
+          throw err
+        })
+    }
+    return this.userPromise
+  }
+
+  /** `architecture` filters models_count for NAM tones only; ignored otherwise. */
+  async getTone(id: number | string, params?: { architecture?: number }): Promise<Tone> {
+    const qs = new URLSearchParams()
+    if (params?.architecture != null) qs.set('architecture', String(params.architecture))
+    const res = await this.fetch(`/api/v1/tones/${id}${qs.size ? `?${qs}` : ''}`)
+    if (!res.ok) throw new Error(`getTone failed: ${res.status}`)
     return res.json()
   }
 
-  async getTone(id: number | string): Promise<Tone> {
-    const res = await this.fetch(`/api/v1/tones/${id}`)
-    if (!res.ok) throw new Error(`getTone failed: ${res.status}`)
+  private async listTones(endpoint: string, params?: ListTonesParams): Promise<PaginatedResponse<Tone>> {
+    const qs = new URLSearchParams()
+    if (params?.page) qs.set('page', String(params.page))
+    if (params?.pageSize) qs.set('page_size', String(params.pageSize))
+    const res = await this.fetch(`/api/v1/tones/${endpoint}?${qs}`)
+    if (!res.ok) throw new ApiError(`list ${endpoint} tones failed`, res.status)
+    return res.json()
+  }
+
+  async listFavoritedTones(params?: ListTonesParams): Promise<PaginatedResponse<Tone>> {
+    return this.listTones('favorited', params)
+  }
+
+  async listCreatedTones(params?: ListTonesParams): Promise<PaginatedResponse<Tone>> {
+    return this.listTones('created', params)
+  }
+
+  async listDownloadedTones(params?: ListTonesParams): Promise<PaginatedResponse<Tone>> {
+    return this.listTones('downloaded', params)
+  }
+
+  /** Top 10 trending tones for a gear type. Not paginated. */
+  async listTrendingTones(gear: string): Promise<{ data: Tone[] }> {
+    const res = await this.fetch(`/api/v1/tones/trending?gear=${encodeURIComponent(gear)}`)
+    if (!res.ok) throw new ApiError('listTrendingTones failed', res.status)
+    return res.json()
+  }
+
+  /** 10 most recently published tones. Not paginated. */
+  async listLatestTones(): Promise<{ data: Tone[] }> {
+    const res = await this.fetch('/api/v1/tones/latest')
+    if (!res.ok) throw new ApiError('listLatestTones failed', res.status)
     return res.json()
   }
 
@@ -151,10 +203,7 @@ export class T3KClient {
     return res.json()
   }
 
-  /**
-   * Download a model file. The model_url must be fetched with Bearer auth — use
-   * this method rather than a plain fetch. Triggers Electron's download manager.
-   */
+  /** Download a model file (model_url requires Bearer auth — don't fetch it directly). */
   async downloadModel(modelUrl: string, name: string): Promise<void> {
     const path = modelUrl.replace(T3K_API, '')
     const res = await this.fetch(path)

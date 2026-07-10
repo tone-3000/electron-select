@@ -1,13 +1,18 @@
-// types.ts — TONE3000 API type definitions
+// TONE3000 API type definitions
 
 export type Demo = 'select' | 'load-tone' | 'load-model' | 'full-api' | 'lan-flow';
 
 export enum Gear {
   Amp = 'amp',
   AmpCab = 'amp-cab',
-  FullRig = 'full-rig',
   Pedal = 'pedal',
   Outboard = 'outboard',
+  Cab = 'cab',
+  Space = 'space',
+  Experimental = 'experimental',
+  /** @deprecated alias for AmpCab — accepted on input, normalized on persist. */
+  FullRig = 'full-rig',
+  /** @deprecated stripped from gears; use Format.Ir instead. */
   Ir = 'ir',
 }
 
@@ -152,12 +157,8 @@ export interface ListModelsParams {
   architecture?: number;
 }
 
-export interface ListCreatedTonesParams {
-  page?: number;
-  pageSize?: number;
-}
-
-export interface ListFavoritedTonesParams {
+/** Pagination params shared by the created / favorited / downloaded tone lists. */
+export interface ListTonesParams {
   page?: number;
   pageSize?: number;
 }

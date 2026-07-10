@@ -1,9 +1,13 @@
 # TONE3000 × Electron — Select Flow Example
 
 A minimal [Electron](https://www.electronjs.org/) reference integration for the
-**TONE3000 select flow**: the user clicks "Browse Tones", picks a tone on TONE3000
-(embedded in a panel beside the app's own sidebar), and the app receives the tone plus
-its downloadable model files. It is the desktop counterpart to the web select demo in
+**TONE3000 API**. On first launch a welcome screen connects the user's TONE3000 account
+via the **standard OAuth flow** (embedded in a panel beside the app's own sidebar). Once
+signed in, the app shows tabs for tones **Loaded on Acme**, plus the user's TONE3000
+**Favorites**, **Created**, and **Recents** (downloaded) lists via the REST API — any of
+them can be loaded into the app with one click. "Browse Tones on TONE3000" launches the
+**select flow**, where the user picks a tone in TONE3000's own catalog UI. Loaded tones
+expose their downloadable model files. It is the desktop counterpart to the web demos in
 the [TONE3000 API examples](https://www.tone3000.com/api).
 
 Built with **electron-vite** (Electron + Vite + React + TypeScript).
@@ -12,13 +16,17 @@ Built with **electron-vite** (Electron + Vite + React + TypeScript).
 
 ## How it works
 
-The app's UI — sidebar, header, chrome — stays mounted the whole time. Clicking
-"Browse Tones" opens TONE3000 in an embedded
+The app's UI — sidebar, header, chrome — stays mounted the whole time. Both OAuth flows
+(the welcome screen's "Log into TONE3000" standard authorization and the select flow's
+"Browse Tones") open TONE3000 in an embedded
 [`WebContentsView`](https://www.electronjs.org/docs/latest/api/web-contents-view)
-laid into the content region beside the sidebar. When TONE3000 redirects back, the main
-process removes the view and hands the app the chosen tone — no popup, no second window,
-and the app never navigates away from itself. Two things are handled specially to fit a
-desktop app.
+laid into the content region beside the sidebar; the only difference is whether the
+authorize URL carries `prompt=select_tone`. When TONE3000 redirects back, the main
+process removes the view and hands the app the outcome (tokens, plus the chosen tone for
+the select flow) — no popup, no second window, and the app never navigates away from
+itself. After sign-in, the Favorites / Created / Recents tabs call the REST endpoints
+(`/api/v1/tones/favorited`, `/created`, `/downloaded`) directly from the renderer via
+`T3KClient`. Two things are handled specially to fit a desktop app.
 
 ### Token persistence (safeStorage)
 
@@ -111,10 +119,13 @@ npm install
 npm run dev
 ```
 
-An Electron window opens on the "No Tone Loaded" state. Click **Browse Tones on
-TONE3000** — TONE3000 fills the area beside the sidebar (the app UI stays visible). Sign
-in and pick a tone; the panel closes and the app shows the tone and its models. Press
-**Escape** to cancel without selecting.
+An Electron window opens on the welcome screen. Click **Log into TONE3000** — TONE3000
+fills the area beside the sidebar (the app UI stays visible) and you sign in; the panel
+closes and the main screen appears. From there, load tones from the **T3K Favorites /
+Created / Recents** tabs with one click, or click **Browse Tones on TONE3000** to pick a
+tone from the catalog via the select flow. Loaded tones collect under **Loaded on Acme**
+with their downloadable models. Use TONE3000's own close button (`menubar=true`) or press
+**Escape** to close the embedded panel without finishing a flow.
 
 **Verify persistence:** fully quit the app (Cmd+Q) and relaunch. It comes up already
 showing **"Signed in as @you"** with no login — the token is read back from `safeStorage`

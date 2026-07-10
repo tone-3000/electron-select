@@ -18,7 +18,6 @@ function ModelRow({ model }: { model: Model }) {
     setDownloading(true)
     setError(null)
     try {
-      // Bearer-authenticated fetch of the model file → Electron download manager.
       await t3kClient.downloadModel(model.model_url, model.name)
     } catch {
       setError('Download failed')

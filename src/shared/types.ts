@@ -1,10 +1,4 @@
-/**
- * Shared type definitions for the TONE3000 select flow.
- *
- * Imported (type-only) by the main process, the preload bridge, and the
- * renderer so all three stay in lockstep — these types cross the IPC boundary,
- * and a single source keeps them from drifting.
- */
+/** Shared IPC types for main, preload, and renderer. */
 
 export interface T3KTokens {
   access_token: string
@@ -13,7 +7,7 @@ export interface T3KTokens {
   expires_at: number
 }
 
-/** Options that shape the TONE3000 authorize URL. Param names are verbatim. */
+/** Authorize URL options. Param names match the TONE3000 API. */
 export interface SelectFlowOptions {
   gears?: string
   platform?: string
@@ -23,20 +17,17 @@ export interface SelectFlowOptions {
   loginHint?: string
 }
 
-/** Everything the renderer hands main to kick off a select flow. */
+/** Config the renderer passes to main to start an embedded OAuth flow. */
 export interface BeginSelectConfig {
   publishableKey: string
   redirectUri: string
   apiDomain: string
+  /** `select_tone` for browse+pick; omit for login-only. */
+  prompt?: 'select_tone'
   options?: SelectFlowOptions
 }
 
-/**
- * Screen region (device-independent pixels, relative to the window's content
- * area) where the embedded TONE3000 WebContentsView should sit. The renderer
- * measures the DOM slot beside the sidebar and hands these bounds to main, which
- * positions the view and keeps it in sync as the window resizes.
- */
+/** Bounds for the embedded WebContentsView (DIP, relative to content area). */
 export interface ViewBounds {
   x: number
   y: number
@@ -44,15 +35,9 @@ export interface ViewBounds {
   height: number
 }
 
-/**
- * Outcome of a select flow, pushed to the renderer when main tears the embedded
- * view down (see `onSelectComplete`). `toneId` is the tone to display — the most
- * recently selected one — carried on every status so a canceled/errored
- * re-browse still restores the previously loaded tone.
- */
+/** Outcome pushed to the renderer when the embedded flow finishes. */
 export interface SelectResult {
   status: 'selected' | 'canceled' | 'error' | 'none'
   toneId?: string
-  /** Present when status is 'error'. */
   error?: string
 }

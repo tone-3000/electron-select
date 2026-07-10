@@ -1,4 +1,3 @@
-// src/components/ErrorBanner.tsx
 interface Props {
   message: string;
   onDismiss?: () => void;

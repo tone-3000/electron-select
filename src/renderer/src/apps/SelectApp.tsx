@@ -3,24 +3,50 @@ import { PUBLISHABLE_KEY_SELECT, REDIRECT_URI, T3K_API } from '../config'
 import { t3kClient } from '../client'
 import { ToneCard } from '../components/ToneCard'
 import { ModelList } from '../components/ModelList'
+import { RemoteToneList, clearToneListCache, type RemoteListKind } from '../components/RemoteToneList'
+import { ApiError } from '../tone3000-client'
 import { Spinner } from '../components/Spinner'
 import { ErrorBanner } from '../components/ErrorBanner'
-import type { Tone, Model } from '../types'
+import { Format, type Tone, type Model } from '../types'
 import type { BeginSelectConfig, ViewBounds } from '../../../shared/types'
 import t3kLogo from '../assets/t3k.svg'
 
 type ToneWithModels = Tone & { models: Model[] }
+type EmbedMode = 'login' | 'select'
+type Tab = 'loaded' | 'favorites' | 'created' | 'recents' | 'trending' | 'latest'
 
-const selectConfig: BeginSelectConfig = {
+const baseConfig = {
   publishableKey: PUBLISHABLE_KEY_SELECT,
   redirectUri: REDIRECT_URI,
   apiDomain: T3K_API,
-  options: { platform: 'nam', gears: 'full-rig', menubar: true, architecture: 2, calibrated: true },
 }
 
-// The embedded TONE3000 view is positioned by the main process to cover this
-// element exactly. getBoundingClientRect is relative to the renderer viewport,
-// which is the window's content area — the same origin main's setBounds uses.
+const loginConfig: BeginSelectConfig = { ...baseConfig }
+
+// Unrestricted catalog; architecture: 2 so NAM tones have A2 models.
+const selectConfig: BeginSelectConfig = {
+  ...baseConfig,
+  prompt: 'select_tone',
+  options: { menubar: true, architecture: 2 },
+}
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'loaded', label: 'Loaded on Acme' },
+  { id: 'favorites', label: 'T3K Favorites' },
+  { id: 'created', label: 'T3K Created' },
+  { id: 'recents', label: 'T3K Recents' },
+  { id: 'trending', label: 'T3K Trending' },
+  { id: 'latest', label: 'T3K Latest' },
+]
+
+const TAB_TO_KIND: Record<Exclude<Tab, 'loaded'>, RemoteListKind> = {
+  favorites: 'favorited',
+  created: 'created',
+  recents: 'downloaded',
+  trending: 'trending',
+  latest: 'latest',
+}
+
 function measureBounds(el: HTMLElement): ViewBounds {
   const r = el.getBoundingClientRect()
   return {
@@ -32,18 +58,19 @@ function measureBounds(el: HTMLElement): ViewBounds {
 }
 
 export function SelectApp() {
-  const [tone, setTone] = useState<ToneWithModels | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [canceled, setCanceled] = useState(false)
   const [connected, setConnected] = useState(t3kClient.isConnected())
   const [username, setUsername] = useState<string | null>(null)
-  const [browsing, setBrowsing] = useState(false)
+  const [embed, setEmbed] = useState<EmbedMode | null>(null)
+  const [activeTab, setActiveTab] = useState<Tab>('loaded')
+  const [loadedTones, setLoadedTones] = useState<ToneWithModels[]>([])
+  const loadedTonesRef = useRef<ToneWithModels[]>([])
+  loadedTonesRef.current = loadedTones
+  const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [loadingTone, setLoadingTone] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [canceled, setCanceled] = useState(false)
   const slotRef = useRef<HTMLDivElement>(null)
 
-  // Whenever connected, fetch the signed-in user with the stored token (no OAuth).
-  // On boot this runs against tokens hydrated from safeStorage — the persistence
-  // requirement made visible: "Signed in as @you" with no login.
   useEffect(() => {
     if (!connected) {
       setUsername(null)
@@ -53,28 +80,51 @@ export function SelectApp() {
     t3kClient
       .getUser()
       .then((u) => { if (!cancelled) setUsername(u.username) })
-      .catch(() => { if (!cancelled) { setConnected(false); setUsername(null) } })
+      .catch((err) => {
+        if (cancelled) return
+        // Don't log out on transient errors — only when tokens are gone.
+        if (err instanceof ApiError && err.isRateLimit) return
+        if (!t3kClient.isConnected()) {
+          setConnected(false)
+          setUsername(null)
+        }
+      })
     return () => { cancelled = true }
   }, [connected])
 
-  const loadTone = useCallback((toneId: string) => {
-    setLoading(true)
-    Promise.all([
-      t3kClient.getTone(toneId),
-      t3kClient.listModels(toneId, { architecture: 2 }),
-    ])
-      .then(([t, modelsRes]) => setTone({ ...t, models: modelsRes.data }))
-      .catch(() => setError('Failed to load tone. Please try again.'))
-      .finally(() => setLoading(false))
+  // Fetch tone + models, prepend to loaded list. NAM tones get A2 models only.
+  const loadTone = useCallback((toneId: string | number) => {
+    setActiveTab('loaded')
+    const existing = loadedTonesRef.current.find((x) => String(x.id) === String(toneId))
+    if (existing) {
+      setSelectedId(existing.id)
+      return
+    }
+    setLoadingTone(true)
+    t3kClient
+      .getTone(toneId, { architecture: 2 })
+      .then(async (t) => {
+        const modelsRes = await t3kClient.listModels(
+          toneId,
+          t.format === Format.Nam ? { architecture: 2 } : undefined
+        )
+        const loaded: ToneWithModels = { ...t, models: modelsRes.data }
+        setLoadedTones((prev) => [loaded, ...prev.filter((x) => x.id !== loaded.id)])
+        setSelectedId(loaded.id)
+      })
+      .catch((err) =>
+        setError(
+          err instanceof ApiError && err.isRateLimit
+            ? 'Too many requests — wait a moment and try again.'
+            : 'Failed to load tone. Please try again.'
+        )
+      )
+      .finally(() => setLoadingTone(false))
   }, [])
 
-  // Hear the outcome pushed by main when it tears the embedded view down. This
-  // is the single place `browsing` flips back to false — the view is already
-  // gone in main by the time this fires, so the UI and the native view stay in
-  // lockstep. Subscribed once; the returned fn unsubscribes on unmount.
   useEffect(() => {
     return window.t3k.onSelectComplete((result) => {
-      setBrowsing(false)
+      setEmbed(null)
       if (result.status === 'selected') {
         void t3kClient.hydrate().then(() => {
           setCanceled(false)
@@ -85,21 +135,22 @@ export function SelectApp() {
       } else if (result.status === 'canceled') {
         setCanceled(true)
       } else if (result.status === 'error') {
-        setError('Authentication failed. Please try again.')
+        setError(
+          result.error === 'authorize_failed_403' || result.error === 'authorize_failed_429'
+            ? 'Too many requests — wait a moment and try again.'
+            : 'Authentication failed. Please try again.'
+        )
       }
     })
   }, [loadTone])
 
-  // While browsing, drive the embedded view: start the flow at the slot's
-  // measured bounds, then keep those bounds synced as the slot (or window)
-  // resizes. main's beginSelect is idempotent — it destroys any prior view — so
-  // StrictMode's double-invoked effect in dev just re-creates one view.
+  // Position the embedded view over the slot and keep it synced on resize.
   useLayoutEffect(() => {
-    if (!browsing) return
+    if (!embed) return
     const el = slotRef.current
     if (!el) return
 
-    void window.t3k.beginSelect(selectConfig, measureBounds(el))
+    void window.t3k.beginSelect(embed === 'select' ? selectConfig : loginConfig, measureBounds(el))
 
     const sync = (): void => window.t3k.setSelectBounds(measureBounds(el))
     const ro = new ResizeObserver(sync)
@@ -109,22 +160,28 @@ export function SelectApp() {
       ro.disconnect()
       window.removeEventListener('resize', sync)
     }
-  }, [browsing])
+  }, [embed])
 
-  const handleBrowse = (): void => {
+  const startEmbed = (mode: EmbedMode): void => {
     setCanceled(false)
     setError(null)
-    setBrowsing(true)
+    setEmbed(mode)
   }
 
   const handleDisconnect = (): void => {
-    if (browsing) void window.t3k.endSelect()
+    if (embed) void window.t3k.endSelect()
     t3kClient.clearTokens()
+    clearToneListCache()
     setConnected(false)
-    setTone(null)
+    setEmbed(null)
+    setActiveTab('loaded')
+    setLoadedTones([])
+    setSelectedId(null)
     setCanceled(false)
     setError(null)
   }
+
+  const selectedTone = loadedTones.find((t) => t.id === selectedId) ?? null
 
   return (
     <div className="app-shell app-shell--full">
@@ -155,18 +212,44 @@ export function SelectApp() {
           </button>
         </aside>
 
-        <main className={`full-app-main${browsing ? ' full-app-main--embed' : ''}`}>
-          {browsing ? (
+        <main className={`full-app-main${embed ? ' full-app-main--embed' : ''}`}>
+          {embed ? (
             <div className="webview-slot" ref={slotRef} />
+          ) : !connected ? (
+            <div className="connect-state">
+              <div className="welcome-brands">
+                <span className="welcome-brand">🎸 Acme Inc</span>
+                <span className="welcome-x">×</span>
+                <span className="welcome-brand welcome-brand--t3k">
+                  <img src={t3kLogo} alt="TONE3000" className="welcome-t3k-logo" />
+                </span>
+              </div>
+              <h2 className="connect-state-title">Welcome to the Acme TONE3000 integration</h2>
+              <p className="connect-state-desc">
+                Connect your TONE3000 account to bring your tones into Acme Inc — load your
+                favorites, your own captures, and recent downloads, or browse the full catalog
+                and download models straight into the app.
+              </p>
+
+              {canceled && (
+                <div className="info-banner">
+                  <span className="info-banner-icon">ℹ️</span>
+                  <p>You closed TONE3000 without signing in.</p>
+                </div>
+              )}
+              {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+
+              <button className="btn btn-primary btn-large" onClick={() => startEmbed('login')}>
+                Log into TONE3000
+              </button>
+            </div>
           ) : (
             <>
               <div className="section-header">
                 <h2 className="section-title">TONE3000</h2>
-                {tone && (
-                  <button className="btn btn-secondary" onClick={handleBrowse}>
-                    Browse Different Tone
-                  </button>
-                )}
+                <button className="btn btn-primary" onClick={() => startEmbed('select')}>
+                  Browse Tones on TONE3000
+                </button>
               </div>
 
               {canceled && (
@@ -175,40 +258,68 @@ export function SelectApp() {
                   <p>You closed TONE3000 without selecting a tone.</p>
                 </div>
               )}
-
               {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
 
-              {loading && (
-                <div className="loading-state">
-                  <Spinner />
-                  <p>Loading tone from TONE3000…</p>
-                </div>
-              )}
-
-              {!loading && !tone && (
-                <div className="empty-state">
-                  <div className="empty-state-icon">🎛️</div>
-                  <h3 className="empty-state-title">No Tone Loaded</h3>
-                  <p className="empty-state-desc">
-                    {connected
-                      ? "You're connected — your session is saved and persists after you quit and relaunch. Browse the catalog to load a tone."
-                      : 'Browse the TONE3000 catalog to find a tone and load it into Acme Inc. You can download the model directly.'}
-                  </p>
-                  <button className="btn btn-primary btn-t3k" onClick={handleBrowse}>
-                    <img src={t3kLogo} alt="" className="btn-logo" />
-                    Browse Tones on TONE3000
+              <div className="tab-bar">
+                {TABS.map((tab) => (
+                  <button
+                    key={tab.id}
+                    className={`tab${activeTab === tab.id ? ' tab--active' : ''}`}
+                    onClick={() => setActiveTab(tab.id)}
+                  >
+                    {tab.label}
+                    {tab.id === 'loaded' && loadedTones.length > 0 && ` (${loadedTones.length})`}
                   </button>
-                </div>
-              )}
+                ))}
+              </div>
 
-              {tone && !loading && (
-                <div className="tone-detail">
-                  <ToneCard tone={tone} />
-                  <div className="model-section">
-                    <h3 className="model-section-title">Models</h3>
-                    <ModelList models={tone.models} />
+              {activeTab === 'loaded' ? (
+                loadingTone ? (
+                  <div className="loading-state">
+                    <Spinner />
+                    <p>Loading tone from TONE3000…</p>
                   </div>
-                </div>
+                ) : loadedTones.length === 0 ? (
+                  <div className="empty-state">
+                    <div className="empty-state-icon">🎛️</div>
+                    <h3 className="empty-state-title">No Tones Loaded on Acme</h3>
+                    <p className="empty-state-desc">
+                      Browse the TONE3000 catalog, or pick from your Favorites, Created, and
+                      Recents tabs to load a tone into Acme Inc.
+                    </p>
+                    <button className="btn btn-primary" onClick={() => startEmbed('select')}>
+                      Browse Tones on TONE3000
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="tone-grid">
+                      {loadedTones.map((t) => (
+                        <div
+                          key={t.id}
+                          className={`tone-grid-item${t.id === selectedId ? ' tone-grid-item--active' : ''}`}
+                        >
+                          <ToneCard tone={t} compact onClick={() => setSelectedId(t.id)} />
+                        </div>
+                      ))}
+                    </div>
+                    {selectedTone && (
+                      <div className="tone-detail loaded-detail">
+                        <ToneCard tone={selectedTone} />
+                        <div className="model-section">
+                          <h3 className="model-section-title">Models</h3>
+                          <ModelList models={selectedTone.models} />
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )
+              ) : (
+                <RemoteToneList
+                  key={activeTab}
+                  kind={TAB_TO_KIND[activeTab]}
+                  onLoad={loadTone}
+                />
               )}
             </>
           )}

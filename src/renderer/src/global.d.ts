@@ -2,7 +2,6 @@ import type { T3KTokens, BeginSelectConfig, SelectResult, ViewBounds } from '../
 
 declare global {
   interface Window {
-    // Bridge exposed by the preload script (see src/preload/index.ts).
     t3k: {
       beginSelect(config: BeginSelectConfig, bounds: ViewBounds): Promise<void>
       setSelectBounds(bounds: ViewBounds): void

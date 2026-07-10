@@ -3,8 +3,7 @@ import { join } from 'path'
 import { existsSync, readFileSync, writeFileSync, rmSync } from 'fs'
 import type { T3KTokens } from '../shared/types'
 
-// Encrypted store is the default. The plaintext fallback only kicks in when the
-// OS keychain is unavailable (e.g. a Linux box with no Secret Service / keyring).
+// Encrypted by default; plaintext fallback when OS keychain is unavailable.
 const encPath = () => join(app.getPath('userData'), 'tokens.enc')
 const plainPath = () => join(app.getPath('userData'), 'tokens.json')
 

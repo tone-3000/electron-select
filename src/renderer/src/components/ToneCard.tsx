@@ -1,4 +1,3 @@
-// src/components/ToneCard.tsx
 import type { Tone } from '../types';
 import { CrossOriginImage } from './CrossOriginImage';
 
@@ -15,7 +14,8 @@ const FORMAT_LABELS: Record<string, string> = {
 
 const GEAR_LABELS: Record<string, string> = {
   'amp': 'Amp', 'amp-cab': 'Amp + Cab', 'full-rig': 'Full Rig', 'pedal': 'Pedal',
-  'outboard': 'Outboard', 'ir': 'IR',
+  'outboard': 'Outboard', 'cab': 'Cab', 'space': 'Space', 'experimental': 'Experimental',
+  'ir': 'IR',
 };
 
 export function ToneCard({ tone, onClick, compact = false }: Props) {
