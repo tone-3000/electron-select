@@ -15,7 +15,9 @@
     "dist": "electron-vite build && electron-builder",
     "dist:dir": "electron-vite build && electron-builder --dir"
   },
-  "dependencies": {},
+  "dependencies": {
+    "lucide-react": "^1.24.0"
+  },
   "devDependencies": {
     "@types/node": "^20.14.0",
     "@types/react": "^18.3.3",

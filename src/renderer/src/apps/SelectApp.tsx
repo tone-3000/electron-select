@@ -1,8 +1,20 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import {
+  Bookmark,
+  Clock,
+  Download,
+  ExternalLink,
+  Guitar,
+  Info,
+  type LucideIcon,
+  Search,
+  SlidersHorizontal,
+  Sparkles,
+  TrendingUp,
+} from 'lucide-react'
 import { PUBLISHABLE_KEY_SELECT, REDIRECT_URI, T3K_API } from '../config'
 import { t3kClient } from '../client'
-import { ToneCard } from '../components/ToneCard'
-import { ModelList } from '../components/ModelList'
+import { AcmeToneCard } from '../components/AcmeToneCard'
 import { RemoteToneList, clearToneListCache, type RemoteListKind } from '../components/RemoteToneList'
 import { ApiError } from '../tone3000-client'
 import { Spinner } from '../components/Spinner'
@@ -13,7 +25,8 @@ import t3kLogo from '../assets/t3k.svg'
 
 type ToneWithModels = Tone & { models: Model[] }
 type EmbedMode = 'login' | 'select'
-type Tab = 'loaded' | 'favorites' | 'created' | 'recents' | 'trending' | 'latest'
+type PrimaryView = 'acme' | 't3k'
+type T3kPill = 'favorites' | 'recents' | 'trending' | 'downloads' | 'created'
 
 const baseConfig = {
   publishableKey: PUBLISHABLE_KEY_SELECT,
@@ -30,22 +43,13 @@ const selectConfig: BeginSelectConfig = {
   options: { menubar: true, architecture: 2 },
 }
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'loaded', label: 'Loaded on Acme' },
-  { id: 'favorites', label: 'T3K Favorites' },
-  { id: 'created', label: 'T3K Created' },
-  { id: 'recents', label: 'T3K Recents' },
-  { id: 'trending', label: 'T3K Trending' },
-  { id: 'latest', label: 'T3K Latest' },
+const T3K_PILLS: { id: T3kPill; label: string; Icon: LucideIcon; kind: RemoteListKind }[] = [
+  { id: 'trending', label: 'Trending', Icon: TrendingUp, kind: 'trending' },
+  { id: 'favorites', label: 'Favorites', Icon: Bookmark, kind: 'favorited' },
+  { id: 'recents', label: 'Latest', Icon: Clock, kind: 'latest' },
+  { id: 'downloads', label: 'Downloads', Icon: Download, kind: 'downloaded' },
+  { id: 'created', label: 'Created', Icon: Sparkles, kind: 'created' },
 ]
-
-const TAB_TO_KIND: Record<Exclude<Tab, 'loaded'>, RemoteListKind> = {
-  favorites: 'favorited',
-  created: 'created',
-  recents: 'downloaded',
-  trending: 'trending',
-  latest: 'latest',
-}
 
 function measureBounds(el: HTMLElement): ViewBounds {
   const r = el.getBoundingClientRect()
@@ -61,15 +65,24 @@ export function SelectApp() {
   const [connected, setConnected] = useState(t3kClient.isConnected())
   const [username, setUsername] = useState<string | null>(null)
   const [embed, setEmbed] = useState<EmbedMode | null>(null)
-  const [activeTab, setActiveTab] = useState<Tab>('loaded')
+  const [primary, setPrimary] = useState<PrimaryView>('acme')
+  const [t3kPill, setT3kPill] = useState<T3kPill>('trending')
   const [loadedTones, setLoadedTones] = useState<ToneWithModels[]>([])
   const loadedTonesRef = useRef<ToneWithModels[]>([])
   loadedTonesRef.current = loadedTones
-  const [selectedId, setSelectedId] = useState<number | null>(null)
+  // Only the tone just added starts with models expanded.
+  const [justAddedToneId, setJustAddedToneId] = useState<number | null>(null)
   const [loadingTone, setLoadingTone] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [canceled, setCanceled] = useState(false)
   const slotRef = useRef<HTMLDivElement>(null)
+
+  const activePill = T3K_PILLS.find((p) => p.id === t3kPill) ?? T3K_PILLS[0]
+
+  // Clear "just added" once the user leaves Acme so remounts stay collapsed.
+  useEffect(() => {
+    if (primary !== 'acme') setJustAddedToneId(null)
+  }, [primary])
 
   useEffect(() => {
     if (!connected) {
@@ -82,7 +95,6 @@ export function SelectApp() {
       .then((u) => { if (!cancelled) setUsername(u.username) })
       .catch((err) => {
         if (cancelled) return
-        // Don't log out on transient errors — only when tokens are gone.
         if (err instanceof ApiError && err.isRateLimit) return
         if (!t3kClient.isConnected()) {
           setConnected(false)
@@ -92,25 +104,29 @@ export function SelectApp() {
     return () => { cancelled = true }
   }, [connected])
 
+  const fetchToneWithModels = useCallback(async (toneId: string | number): Promise<ToneWithModels> => {
+    const t = await t3kClient.getTone(toneId, { architecture: 2 })
+    const modelsRes = await t3kClient.listModels(
+      toneId,
+      t.format === Format.Nam
+        ? { architecture: 2, pageSize: 100 }
+        : { pageSize: 100 }
+    )
+    return { ...t, models: modelsRes.data }
+  }, [])
+
   // Fetch tone + models, prepend to loaded list. NAM tones get A2 models only.
   const loadTone = useCallback((toneId: string | number) => {
-    setActiveTab('loaded')
+    setPrimary('acme')
     const existing = loadedTonesRef.current.find((x) => String(x.id) === String(toneId))
     if (existing) {
-      setSelectedId(existing.id)
       return
     }
     setLoadingTone(true)
-    t3kClient
-      .getTone(toneId, { architecture: 2 })
-      .then(async (t) => {
-        const modelsRes = await t3kClient.listModels(
-          toneId,
-          t.format === Format.Nam ? { architecture: 2 } : undefined
-        )
-        const loaded: ToneWithModels = { ...t, models: modelsRes.data }
+    fetchToneWithModels(toneId)
+      .then((loaded) => {
         setLoadedTones((prev) => [loaded, ...prev.filter((x) => x.id !== loaded.id)])
-        setSelectedId(loaded.id)
+        setJustAddedToneId(loaded.id)
       })
       .catch((err) =>
         setError(
@@ -120,7 +136,22 @@ export function SelectApp() {
         )
       )
       .finally(() => setLoadingTone(false))
-  }, [])
+  }, [fetchToneWithModels])
+
+  const refreshTone = useCallback(async (toneId: number) => {
+    try {
+      const loaded = await fetchToneWithModels(toneId)
+      setLoadedTones((prev) => prev.map((x) => (x.id === loaded.id ? loaded : x)))
+      setError(null)
+    } catch (err) {
+      setError(
+        err instanceof ApiError && err.isRateLimit
+          ? 'Too many requests — wait a moment and try again.'
+          : 'Failed to refresh tone. Please try again.'
+      )
+      throw err
+    }
+  }, [fetchToneWithModels])
 
   useEffect(() => {
     return window.t3k.onSelectComplete((result) => {
@@ -144,7 +175,6 @@ export function SelectApp() {
     })
   }, [loadTone])
 
-  // Position the embedded view over the slot and keep it synced on resize.
   useLayoutEffect(() => {
     if (!embed) return
     const el = slotRef.current
@@ -174,21 +204,27 @@ export function SelectApp() {
     clearToneListCache()
     setConnected(false)
     setEmbed(null)
-    setActiveTab('loaded')
+    setPrimary('acme')
+    setT3kPill('trending')
     setLoadedTones([])
-    setSelectedId(null)
+    setJustAddedToneId(null)
     setCanceled(false)
     setError(null)
   }
 
-  const selectedTone = loadedTones.find((t) => t.id === selectedId) ?? null
+  const browseCta = (
+    <button className="btn btn-primary" onClick={() => startEmbed('select')}>
+      <Search size={16} strokeWidth={2} />
+      Browse Tones on TONE3000
+    </button>
+  )
 
   return (
     <div className="app-shell app-shell--full">
       <header className="app-header">
         <div className="app-brand">
           <div className="app-logo-block">
-            <span className="app-logo-icon">🎸</span>
+            <Guitar size={20} strokeWidth={2} className="app-logo-icon" />
             <span className="app-name">Acme Inc</span>
           </div>
           <span className="app-tagline">Guitar Amp Simulation · Electron</span>
@@ -208,7 +244,8 @@ export function SelectApp() {
       <div className="full-app-layout">
         <aside className="sidebar">
           <button className="sidebar-item sidebar-item--active">
-            <span className="sidebar-icon">🎛️</span> TONE3000
+            <SlidersHorizontal size={16} strokeWidth={2} className="sidebar-icon" />
+            TONE3000
           </button>
         </aside>
 
@@ -218,7 +255,9 @@ export function SelectApp() {
           ) : !connected ? (
             <div className="connect-state">
               <div className="welcome-brands">
-                <span className="welcome-brand">🎸 Acme Inc</span>
+                <span className="welcome-brand">
+                  <Guitar size={22} strokeWidth={2} /> Acme Inc
+                </span>
                 <span className="welcome-x">×</span>
                 <span className="welcome-brand welcome-brand--t3k">
                   <img src={t3kLogo} alt="TONE3000" className="welcome-t3k-logo" />
@@ -233,7 +272,7 @@ export function SelectApp() {
 
               {canceled && (
                 <div className="info-banner">
-                  <span className="info-banner-icon">ℹ️</span>
+                  <Info size={16} strokeWidth={2} className="info-banner-icon" />
                   <p>You closed TONE3000 without signing in.</p>
                 </div>
               )}
@@ -245,81 +284,95 @@ export function SelectApp() {
             </div>
           ) : (
             <>
-              <div className="section-header">
-                <h2 className="section-title">TONE3000</h2>
-                <button className="btn btn-primary" onClick={() => startEmbed('select')}>
-                  Browse Tones on TONE3000
+              <div className="primary-tabs">
+                <button
+                  className={`primary-tab${primary === 'acme' ? ' primary-tab--active' : ''}`}
+                  onClick={() => setPrimary('acme')}
+                >
+                  Tones on Acme
+                </button>
+                <button
+                  className={`primary-tab${primary === 't3k' ? ' primary-tab--active' : ''}`}
+                  onClick={() => setPrimary('t3k')}
+                >
+                  TONE3000 Tones
                 </button>
               </div>
 
               {canceled && (
                 <div className="info-banner">
-                  <span className="info-banner-icon">ℹ️</span>
+                  <Info size={16} strokeWidth={2} className="info-banner-icon" />
                   <p>You closed TONE3000 without selecting a tone.</p>
                 </div>
               )}
               {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
 
-              <div className="tab-bar">
-                {TABS.map((tab) => (
-                  <button
-                    key={tab.id}
-                    className={`tab${activeTab === tab.id ? ' tab--active' : ''}`}
-                    onClick={() => setActiveTab(tab.id)}
-                  >
-                    {tab.label}
-                    {tab.id === 'loaded' && loadedTones.length > 0 && ` (${loadedTones.length})`}
-                  </button>
-                ))}
-              </div>
+              {primary === 'acme' ? (
+                <div className="content-panel">
+                  <p className="panel-status">Loaded on this device · synced from T3K</p>
 
-              {activeTab === 'loaded' ? (
-                loadingTone ? (
-                  <div className="loading-state">
-                    <Spinner />
-                    <p>Loading tone from TONE3000…</p>
-                  </div>
-                ) : loadedTones.length === 0 ? (
-                  <div className="empty-state">
-                    <div className="empty-state-icon">🎛️</div>
-                    <h3 className="empty-state-title">No Tones Loaded on Acme</h3>
-                    <p className="empty-state-desc">
-                      Browse the TONE3000 catalog, or pick from your Favorites, Created, and
-                      Recents tabs to load a tone into Acme Inc.
-                    </p>
-                    <button className="btn btn-primary" onClick={() => startEmbed('select')}>
-                      Browse Tones on TONE3000
-                    </button>
-                  </div>
-                ) : (
-                  <>
-                    <div className="tone-grid">
+                  {loadingTone ? (
+                    <div className="loading-state">
+                      <Spinner />
+                      <p>Loading tone from TONE3000…</p>
+                    </div>
+                  ) : loadedTones.length === 0 ? (
+                    <div className="empty-state">
+                      <SlidersHorizontal size={48} strokeWidth={1.5} className="empty-state-icon" />
+                      <h3 className="empty-state-title">No tones loaded on Acme</h3>
+                      <p className="empty-state-desc">
+                        Loaded tones will appear here once synced.
+                      </p>
+                      <button className="btn btn-secondary" onClick={() => setPrimary('t3k')}>
+                        Go to TONE3000 tones
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="acme-tone-stack">
                       {loadedTones.map((t) => (
-                        <div
+                        <AcmeToneCard
                           key={t.id}
-                          className={`tone-grid-item${t.id === selectedId ? ' tone-grid-item--active' : ''}`}
-                        >
-                          <ToneCard tone={t} compact onClick={() => setSelectedId(t.id)} />
-                        </div>
+                          tone={t}
+                          defaultExpanded={t.id === justAddedToneId}
+                          onRefresh={refreshTone}
+                          onRemove={(id) => {
+                            setLoadedTones((prev) => prev.filter((x) => x.id !== id))
+                            setJustAddedToneId((cur) => (cur === id ? null : cur))
+                          }}
+                        />
                       ))}
                     </div>
-                    {selectedTone && (
-                      <div className="tone-detail loaded-detail">
-                        <ToneCard tone={selectedTone} />
-                        <div className="model-section">
-                          <h3 className="model-section-title">Models</h3>
-                          <ModelList models={selectedTone.models} />
-                        </div>
-                      </div>
-                    )}
-                  </>
-                )
+                  )}
+                </div>
               ) : (
-                <RemoteToneList
-                  key={activeTab}
-                  kind={TAB_TO_KIND[activeTab]}
-                  onLoad={loadTone}
-                />
+                <div className="content-panel">
+                  <div className="stream-tabs-row">
+                    <div className="stream-tabs">
+                      {T3K_PILLS.map((pill) => (
+                        <button
+                          key={pill.id}
+                          className={`stream-tab${t3kPill === pill.id ? ' stream-tab--active' : ''}`}
+                          onClick={() => setT3kPill(pill.id)}
+                        >
+                          <pill.Icon size={14} strokeWidth={2} />
+                          {pill.label}
+                        </button>
+                      ))}
+                    </div>
+                    {browseCta}
+                  </div>
+
+                  <h3 className="list-section-title">
+                    <activePill.Icon size={16} strokeWidth={2} className="list-section-icon" />
+                    {activePill.label}
+                  </h3>
+
+                  <RemoteToneList
+                    key={t3kPill}
+                    kind={activePill.kind}
+                    onLoad={loadTone}
+                  />
+                </div>
               )}
             </>
           )}
@@ -333,7 +386,7 @@ export function SelectApp() {
           rel="noreferrer"
           className="back-link"
         >
-          TONE3000 API docs ↗
+          TONE3000 API docs <ExternalLink size={12} strokeWidth={2} />
         </a>
       </footer>
     </div>

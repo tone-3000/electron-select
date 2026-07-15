@@ -1,6 +1,7 @@
-// Paginated user lists + homepage feeds (trending / latest). Cached in memory
-// so tab switches don't refetch. Trending has gear-type pills.
+// Paginated user lists + homepage feeds (trending / latest).
+// Refetches on each tab / page / gear load. Trending has gear-type pills.
 import { useCallback, useEffect, useState } from 'react'
+import { AlertTriangle, SlidersHorizontal } from 'lucide-react'
 import { t3kClient } from '../client'
 import { ApiError } from '../tone3000-client'
 import { ToneCard } from './ToneCard'
@@ -62,36 +63,9 @@ function fetchKind(kind: RemoteListKind, page: number, gear: Gear): Promise<Tone
   }
 }
 
-function cacheKey(kind: RemoteListKind, page: number, gear: Gear): string {
-  return kind === 'trending' ? `trending:${gear}` : `${kind}:${page}`
-}
-
-const listCache = new Map<string, ToneListResult>()
-const inflight = new Map<string, Promise<ToneListResult>>()
-
-/** Clear cached lists (call on disconnect). */
+/** No-op kept for disconnect cleanup callers. */
 export function clearToneListCache(): void {
-  listCache.clear()
-  inflight.clear()
-}
-
-/** Return cached result, join an in-flight request, or start a new one. */
-function fetchList(kind: RemoteListKind, page: number, gear: Gear, force: boolean): Promise<ToneListResult> {
-  const key = cacheKey(kind, page, gear)
-  if (!force) {
-    const cached = listCache.get(key)
-    if (cached) return Promise.resolve(cached)
-    const pending = inflight.get(key)
-    if (pending) return pending
-  }
-  const promise = fetchKind(kind, page, gear)
-    .then((res) => {
-      listCache.set(key, res)
-      return res
-    })
-    .finally(() => inflight.delete(key))
-  inflight.set(key, promise)
-  return promise
+  // Lists are not cached across tab loads; nothing to clear.
 }
 
 interface Props {
@@ -102,18 +76,17 @@ interface Props {
 export function RemoteToneList({ kind, onLoad }: Props) {
   const [page, setPage] = useState(1)
   const [gear, setGear] = useState<Gear>(DEFAULT_GEAR)
-  const [result, setResult] = useState<ToneListResult | null>(
-    () => listCache.get(cacheKey(kind, 1, DEFAULT_GEAR)) ?? null
-  )
-  const [loading, setLoading] = useState(!listCache.has(cacheKey(kind, 1, DEFAULT_GEAR)))
+  const [result, setResult] = useState<ToneListResult | null>(null)
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [retryKey, setRetryKey] = useState(0)
 
   const fetchPage = useCallback(
-    (p: number, force = false): (() => void) => {
+    (p: number): (() => void) => {
       let cancelled = false
       setLoading(true)
       setError(null)
-      fetchList(kind, p, gear, force)
+      fetchKind(kind, p, gear)
         .then((res) => {
           if (!cancelled) setResult(res)
         })
@@ -121,7 +94,7 @@ export function RemoteToneList({ kind, onLoad }: Props) {
           if (cancelled) return
           setError(
             err instanceof ApiError && err.isRateLimit
-              ? 'Too many requests — wait a moment, then hit Refresh.'
+              ? 'Too many requests — wait a moment and try again.'
               : 'Failed to load tones from TONE3000. Please try again.'
           )
         })
@@ -135,19 +108,18 @@ export function RemoteToneList({ kind, onLoad }: Props) {
     [kind, gear]
   )
 
-  useEffect(() => fetchPage(page), [fetchPage, page])
-
-  const handleRefresh = (): void => {
-    void fetchPage(page, true)
-  }
+  useEffect(() => fetchPage(page), [fetchPage, page, retryKey])
 
   const gearPills = kind === 'trending' && (
     <div className="gear-pills">
       {GEAR_PILLS.map((g) => (
         <button
           key={g.id}
-          className={`pill${gear === g.id ? ' pill--active' : ''}`}
-          onClick={() => setGear(g.id)}
+          className={`gear-pill${gear === g.id ? ' gear-pill--active' : ''}`}
+          onClick={() => {
+            setPage(1)
+            setGear(g.id)
+          }}
         >
           {g.label}
         </button>
@@ -172,10 +144,10 @@ export function RemoteToneList({ kind, onLoad }: Props) {
       <>
         {gearPills}
         <div className="empty-state">
-          <div className="empty-state-icon">⚠️</div>
+          <AlertTriangle size={48} strokeWidth={1.5} className="empty-state-icon" />
           <p className="empty-state-desc">{error}</p>
-          <button className="btn btn-secondary" onClick={handleRefresh}>
-            Refresh
+          <button className="btn btn-secondary" onClick={() => setRetryKey((k) => k + 1)}>
+            Try again
           </button>
         </div>
       </>
@@ -188,12 +160,9 @@ export function RemoteToneList({ kind, onLoad }: Props) {
       <>
         {gearPills}
         <div className="empty-state">
-          <div className="empty-state-icon">🎛️</div>
+          <SlidersHorizontal size={48} strokeWidth={1.5} className="empty-state-icon" />
           <h3 className="empty-state-title">{copy.title}</h3>
           <p className="empty-state-desc">{copy.desc}</p>
-          <button className="btn btn-secondary btn-small" onClick={handleRefresh}>
-            Refresh
-          </button>
         </div>
       </>
     )
@@ -202,15 +171,10 @@ export function RemoteToneList({ kind, onLoad }: Props) {
   return (
     <>
       {gearPills}
-      <div className="list-toolbar">
-        <p className="load-hint">Click a tone to load it into Acme Inc.</p>
-        <button className="btn btn-ghost btn-small" onClick={handleRefresh}>
-          Refresh
-        </button>
-      </div>
+      <p className="load-hint">Click + to load a tone onto Acme.</p>
       <div className="tone-grid">
         {result.data.map((tone) => (
-          <ToneCard key={tone.id} tone={tone} compact onClick={() => onLoad(tone.id)} />
+          <ToneCard key={tone.id} tone={tone} compact onAdd={() => onLoad(tone.id)} />
         ))}
       </div>
       {result.total_pages != null && result.total_pages > 1 && (

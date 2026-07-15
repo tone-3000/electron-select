@@ -1,28 +1,44 @@
-import type { Tone } from '../types';
-import { CrossOriginImage } from './CrossOriginImage';
+import { Plus } from 'lucide-react'
+import type { Tone } from '../types'
+import { CrossOriginImage } from './CrossOriginImage'
 
 interface Props {
-  tone: Tone;
-  onClick?: () => void;
-  compact?: boolean;
+  tone: Tone
+  onClick?: () => void
+  /** When set, shows a + control that loads the tone onto Acme. */
+  onAdd?: () => void
+  compact?: boolean
 }
 
 const FORMAT_LABELS: Record<string, string> = {
   'nam': 'NAM', 'ir': 'IR', 'aida-x': 'AIDA-X',
   'aa-snapshot': 'Snapshot', 'proteus': 'Proteus',
-};
+}
 
 const GEAR_LABELS: Record<string, string> = {
   'amp': 'Amp', 'amp-cab': 'Amp + Cab', 'full-rig': 'Full Rig', 'pedal': 'Pedal',
   'outboard': 'Outboard', 'cab': 'Cab', 'space': 'Space', 'experimental': 'Experimental',
   'ir': 'IR',
-};
+}
 
-export function ToneCard({ tone, onClick, compact = false }: Props) {
-  const Tag = onClick ? 'button' : 'div';
+export function ToneCard({ tone, onClick, onAdd, compact = false }: Props) {
+  const Tag = onClick && !onAdd ? 'button' : 'div'
 
   return (
-    <Tag className={`tone-card ${compact ? 'tone-card--compact' : ''}`} onClick={onClick}>
+    <Tag
+      className={`tone-card ${compact ? 'tone-card--compact' : ''}${onClick || onAdd ? ' tone-card--interactive' : ''}`}
+      onClick={onAdd ? undefined : onClick}
+    >
+      {onAdd && (
+        <button
+          type="button"
+          className="tone-card-add"
+          onClick={(e) => { e.stopPropagation(); onAdd() }}
+          aria-label={`Load ${tone.title} onto Acme`}
+        >
+          <Plus size={16} strokeWidth={2.5} />
+        </button>
+      )}
       {tone.images?.[0] && (
         <CrossOriginImage src={tone.images[0]} alt={tone.title} className="tone-card-image" />
       )}
@@ -46,5 +62,5 @@ export function ToneCard({ tone, onClick, compact = false }: Props) {
         )}
       </div>
     </Tag>
-  );
+  )
 }
