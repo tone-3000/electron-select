@@ -133,6 +133,16 @@ export interface Model {
   tone_id: number;
 }
 
+/** Response from GET /api/v1/tones/{id}/download — a zip archive of all the tone's models. */
+export interface ToneDownload {
+  /** Temporary download URL for the zip. No auth needed; expires one hour after being issued. */
+  url: string;
+  /** ISO 8601 timestamp at which `url` stops working. */
+  expires_at: string;
+  /** Suggested filename for the archive, derived from the tone title (e.g. "My Tone.zip"). */
+  filename: string;
+}
+
 export interface PaginatedResponse<T> {
   data: T[];
   page: number;

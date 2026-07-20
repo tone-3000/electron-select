@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { ChevronDown, RefreshCw, Trash2 } from 'lucide-react'
+import { ChevronDown, FolderArchive, RefreshCw, Trash2 } from 'lucide-react'
 import type { Model, Tone, ArchitectureVersion } from '../types'
 import { CrossOriginImage } from './CrossOriginImage'
 import { t3kClient } from '../client'
+import { ApiError } from '../tone3000-client'
 
 const FORMAT_LABELS: Record<string, string> = {
   'nam': 'NAM', 'ir': 'IR', 'aida-x': 'AIDA-X',
@@ -41,9 +42,32 @@ export function AcmeToneCard({ tone, defaultExpanded = false, onRefresh, onRemov
   )
   const [busyIds, setBusyIds] = useState<Set<number>>(() => new Set())
   const [errors, setErrors] = useState<Record<number, string>>({})
+  const [zipping, setZipping] = useState(false)
+  const [zipError, setZipError] = useState<string | null>(null)
 
   // First 5 models start as "Loaded". In a real product you'd auto-download
   // those files here (e.g. t3kClient.downloadModel for each).
+
+  // Download every model in the tone as one .zip via GET /tones/{id}/download.
+  // The URL it returns is temporary (expires in 1h), so we request it fresh on
+  // every click. Note: this endpoint is limited to approved partners — other
+  // API clients receive 403.
+  const handleDownloadZip = (): void => {
+    if (zipping) return
+    setZipping(true)
+    setZipError(null)
+    void t3kClient.downloadToneZip(tone.id)
+      .catch((err) => {
+        if (err instanceof ApiError && err.status === 403) {
+          setZipError('Zip downloads are available to approved partners only')
+        } else if (err instanceof ApiError && err.status === 400) {
+          setZipError('This tone has no downloadable models')
+        } else {
+          setZipError('Zip download failed')
+        }
+      })
+      .finally(() => setZipping(false))
+  }
 
   const handleRefresh = (): void => {
     if (refreshing) return
@@ -111,6 +135,17 @@ export function AcmeToneCard({ tone, defaultExpanded = false, onRefresh, onRemov
               <button
                 type="button"
                 className="btn btn-ghost btn-small"
+                onClick={handleDownloadZip}
+                disabled={zipping}
+                aria-label={`Download all models of ${tone.title} as a zip archive`}
+                title="Download all models as .zip"
+              >
+                <FolderArchive size={14} strokeWidth={2} />
+                {zipping ? 'Zipping…' : 'Download .zip'}
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-small"
                 onClick={handleRefresh}
                 disabled={refreshing}
                 aria-label={`Refresh ${tone.title} from TONE3000`}
@@ -137,6 +172,7 @@ export function AcmeToneCard({ tone, defaultExpanded = false, onRefresh, onRemov
             </div>
           </div>
           <p className="acme-tone-card-creator">by @{tone.user.username}</p>
+          {zipError && <p className="model-row-error">{zipError}</p>}
           <div className="tone-card-badges">
             <span className="badge badge--platform">{FORMAT_LABELS[tone.format] ?? tone.format}</span>
             <span className="badge badge--gear">{GEAR_LABELS[tone.gear] ?? tone.gear}</span>

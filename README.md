@@ -170,6 +170,14 @@ src/
 
 ## Notes
 
+- **This `zip` branch** wires up the [Download Tone](https://www.tone3000.com/api#tones)
+  endpoint: each loaded tone card gets a **Download .zip** button that fetches
+  `GET /api/v1/tones/{id}/download` (via `T3KClient.getToneDownload`) and then downloads
+  the returned temporary URL — a zip archive of *all* the tone's models — with no auth
+  header (`T3KClient.downloadToneZip`). The URL expires an hour after being issued, so
+  it's requested fresh on every click. Note this endpoint is available to **approved
+  partners only**; other API clients receive `403` (surfaced in the card UI). For most
+  integrations, download individual models via `model_url` instead.
 - Model files are downloaded via authenticated Bearer requests (see
   `T3KClient.downloadModel`). The web demo's in-app WASM preview player is omitted to keep
   the example focused.

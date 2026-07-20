@@ -6,7 +6,7 @@
 
 import { T3K_API } from './config'
 import type {
-  User, Tone, Model, PaginatedResponse, ListModelsParams, ListTonesParams,
+  User, Tone, Model, ToneDownload, PaginatedResponse, ListModelsParams, ListTonesParams,
 } from './types'
 import type { T3KTokens } from '../../shared/types'
 
@@ -201,6 +201,36 @@ export class T3KClient {
     const res = await this.fetch(`/api/v1/models?${qs}`)
     if (!res.ok) throw new Error(`listModels failed: ${res.status}`)
     return res.json()
+  }
+
+  /**
+   * Get a temporary download URL for a zip archive of all of a tone's models
+   * (GET /api/v1/tones/{id}/download).
+   *
+   * Approved partners only — other API clients receive 403. Returns 400 if the
+   * tone has no downloadable models. The returned url needs no auth header and
+   * expires one hour after being issued, so request it when the user initiates
+   * a download rather than storing it.
+   */
+  async getToneDownload(toneId: number | string): Promise<ToneDownload> {
+    const res = await this.fetch(`/api/v1/tones/${toneId}/download`)
+    if (!res.ok) throw new ApiError('getToneDownload failed', res.status)
+    return res.json()
+  }
+
+  /** Download all of a tone's models as a single .zip archive. */
+  async downloadToneZip(toneId: number | string): Promise<void> {
+    const { url, filename } = await this.getToneDownload(toneId)
+
+    // The URL is pre-signed — fetch it directly, without an Authorization header.
+    const res = await fetch(url)
+    if (!res.ok) throw new ApiError('Zip download failed', res.status)
+
+    const blob = await res.blob()
+    const objectUrl = URL.createObjectURL(blob)
+    const a = Object.assign(document.createElement('a'), { href: objectUrl, download: filename })
+    a.click()
+    URL.revokeObjectURL(objectUrl)
   }
 
   /** Download a model file (model_url requires Bearer auth — don't fetch it directly). */
