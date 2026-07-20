@@ -58,12 +58,13 @@ export function AcmeToneCard({ tone, defaultExpanded = false, onRefresh, onRemov
     setZipError(null)
     void t3kClient.downloadToneZip(tone.id)
       .catch((err) => {
+        console.error('Zip download failed:', err)
         if (err instanceof ApiError && err.status === 403) {
           setZipError('Zip downloads are available to approved partners only')
         } else if (err instanceof ApiError && err.status === 400) {
           setZipError('This tone has no downloadable models')
         } else {
-          setZipError('Zip download failed')
+          setZipError(err instanceof Error ? `Zip download failed — ${err.message}` : 'Zip download failed')
         }
       })
       .finally(() => setZipping(false))

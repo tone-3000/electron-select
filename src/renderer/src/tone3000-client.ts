@@ -214,19 +214,26 @@ export class T3KClient {
    */
   async getToneDownload(toneId: number | string): Promise<ToneDownload> {
     const res = await this.fetch(`/api/v1/tones/${toneId}/download`)
-    if (!res.ok) throw new ApiError('getToneDownload failed', res.status)
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      throw new ApiError(`getToneDownload failed${body ? ` — ${body}` : ''}`, res.status)
+    }
     return res.json()
   }
 
-  /** Download all of a tone's models as a single .zip archive. */
+  /**
+   * Download all of a tone's models as a single .zip archive.
+   *
+   * The pre-signed URL needs no auth, but the storage host serving it doesn't
+   * send CORS headers, so fetching it from the renderer fails ("Failed to
+   * fetch"). The bytes are fetched by the main process instead (not subject to
+   * CORS) and saved here via a blob anchor, like downloadModel.
+   */
   async downloadToneZip(toneId: number | string): Promise<void> {
     const { url, filename } = await this.getToneDownload(toneId)
+    const bytes = await window.t3k.fetchZip(url)
 
-    // The URL is pre-signed — fetch it directly, without an Authorization header.
-    const res = await fetch(url)
-    if (!res.ok) throw new ApiError('Zip download failed', res.status)
-
-    const blob = await res.blob()
+    const blob = new Blob([bytes], { type: 'application/zip' })
     const objectUrl = URL.createObjectURL(blob)
     const a = Object.assign(document.createElement('a'), { href: objectUrl, download: filename })
     a.click()

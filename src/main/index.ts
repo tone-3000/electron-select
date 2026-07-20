@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, WebContentsView, ipcMain } from 'electron'
+import { app, shell, net, BrowserWindow, WebContentsView, ipcMain } from 'electron'
 import { join } from 'path'
 import { randomBytes, createHash } from 'node:crypto'
 import { tokenStore } from './tokenStore'
@@ -254,6 +254,16 @@ app.whenReady().then(() => {
   ipcMain.handle('oauth:endSelect', (event) => {
     const win = BrowserWindow.fromWebContents(event.sender)
     if (win) void finishFlow(win, { canceled: true })
+  })
+
+  // Fetch a pre-signed tone-zip URL (from GET /tones/{id}/download) on behalf
+  // of the renderer. The storage host serving the archive doesn't send CORS
+  // headers, so the renderer's fetch is blocked; main isn't subject to CORS.
+  ipcMain.handle('download:fetchZip', async (_event, url: string): Promise<ArrayBuffer> => {
+    if (new URL(url).protocol !== 'https:') throw new Error('zip_url_not_https')
+    const res = await net.fetch(url)
+    if (!res.ok) throw new Error(`zip_fetch_failed_${res.status}`)
+    return res.arrayBuffer()
   })
 
   ipcMain.handle('tokens:get', () => tokenStore.get())

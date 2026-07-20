@@ -13,6 +13,8 @@ const t3k = {
     ipcRenderer.on('oauth:selectComplete', listener)
     return () => ipcRenderer.removeListener('oauth:selectComplete', listener)
   },
+  /** Fetch a pre-signed tone-zip URL from main (the storage host blocks renderer CORS). */
+  fetchZip: (url: string): Promise<ArrayBuffer> => ipcRenderer.invoke('download:fetchZip', url),
   tokens: {
     get: (): Promise<T3KTokens | null> => ipcRenderer.invoke('tokens:get'),
     set: (tokens: T3KTokens): Promise<void> => ipcRenderer.invoke('tokens:set', tokens),
