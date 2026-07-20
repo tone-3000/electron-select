@@ -6,7 +6,7 @@
   "main": "./out/main/index.js",
   "author": "TONE3000",
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "electron-vite dev -w",
     "start": "electron-vite preview",
     "build": "electron-vite build",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
